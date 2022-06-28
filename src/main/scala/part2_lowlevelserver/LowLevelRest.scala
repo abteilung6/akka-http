@@ -2,11 +2,12 @@ package part2_lowlevelserver
 
 import akka.actor.{Actor, ActorLogging, ActorSystem, Props}
 import akka.http.scaladsl.Http
+import akka.http.scaladsl.model.Uri.{/, Query}
 import akka.http.scaladsl.model.{ContentTypes, HttpEntity, HttpMethods, HttpRequest, HttpResponse, StatusCodes, Uri}
 import akka.pattern.ask
 import akka.stream.ActorMaterializer
 import akka.util.Timeout
-import part2_lowlevelserver.GuitarDB.{CreateGuitar, FindAllGuitars, GuitarCreated}
+import part2_lowlevelserver.GuitarDB.{CreateGuitar, FindAllGuitars, FindGuitar, GuitarCreated}
 import spray.json._
 
 import scala.concurrent.Future
@@ -98,18 +99,47 @@ object LowLevelRest extends App with GuitarStoreJsonProtocol {
   /*
   server code
    */
+
+  def getGuitar(query: Query): Future[HttpResponse] = {
+    val guitarId = query.get("id").map(_.toInt)
+    guitarId match {
+      case None => Future(HttpResponse(StatusCodes.NotFound))
+      case Some(id: Int) =>
+        val guitarFuture = (guitarDb ? FindGuitar(id)).mapTo[Option[Guitar]]
+        guitarFuture.map {
+          case None => HttpResponse(StatusCodes.NotFound)
+          case Some(guitar) =>
+            HttpResponse(
+              entity = HttpEntity(
+                ContentTypes.`application/json`,
+                guitar.toJson.prettyPrint
+              )
+            )
+        }
+    }
+
+  }
+
   implicit val defaultTimeout: Timeout = Timeout(2 seconds)
   val requestHandler: HttpRequest => Future[HttpResponse] = {
-    case HttpRequest(HttpMethods.GET, Uri.Path("/api/guitar"), _, _,_ ) =>
-      val guitarsFuture: Future[List[Guitar]] = (guitarDb ? FindAllGuitars).mapTo[List[Guitar]]
-      guitarsFuture.map { guitars =>
-        HttpResponse(
-          entity = HttpEntity(
-            ContentTypes.`application/json`,
-            guitars.toJson.prettyPrint
+    case HttpRequest(HttpMethods.GET, uri@Uri.Path("/api/guitar"), _, _,_ ) =>
+      // query parameter handling code
+      val query = uri.query() // query object <=> Map[String, String]
+      if (query.isEmpty) {
+        val guitarsFuture: Future[List[Guitar]] = (guitarDb ? FindAllGuitars).mapTo[List[Guitar]]
+        guitarsFuture.map { guitars =>
+          HttpResponse(
+            entity = HttpEntity(
+              ContentTypes.`application/json`,
+              guitars.toJson.prettyPrint
+            )
           )
-        )
+        }
+      } else {
+        getGuitar(query)
       }
+
+
     case HttpRequest(HttpMethods.POST, Uri.Path("/api/guitar"), _, entity, _) =>
       // entities are a Source[ByteString]
       val strictEntityFuture = entity.toStrict(3 seconds)
